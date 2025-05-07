@@ -1,5 +1,6 @@
 
-import * as LiteDB from 'litedb.js';
+// Since there's an issue with importing litedb.js, we need to modify the PazientiService
+// to use localStorage for now, until the correct database dependency is available.
 
 export interface Paziente {
   id?: string;
@@ -16,21 +17,27 @@ export interface Paziente {
 }
 
 class PazientiService {
-  private db: LiteDB.Database;
-  private collection: LiteDB.Collection<Paziente>;
-
+  private storageKey = 'pazienti-data';
+  
   constructor() {
-    this.db = new LiteDB.Database('gestionale-sanitario.db');
-    this.collection = this.db.getCollection<Paziente>('pazienti');
-    
-    // Crea indici per migliorare le prestazioni delle query
-    this.collection.ensureIndex('codiceFiscale');
-    this.collection.ensureIndex('cognome');
+    // Initialize localStorage if needed
+    if (!localStorage.getItem(this.storageKey)) {
+      localStorage.setItem(this.storageKey, JSON.stringify([]));
+    }
+  }
+
+  private getAllFromStorage(): Paziente[] {
+    const data = localStorage.getItem(this.storageKey) || '[]';
+    return JSON.parse(data);
+  }
+
+  private saveToStorage(pazienti: Paziente[]): void {
+    localStorage.setItem(this.storageKey, JSON.stringify(pazienti));
   }
 
   async getAll(): Promise<Paziente[]> {
     try {
-      return await this.collection.find().toArray();
+      return this.getAllFromStorage();
     } catch (error) {
       console.error('Errore durante il recupero dei pazienti:', error);
       return [];
@@ -39,7 +46,8 @@ class PazientiService {
 
   async getById(id: string): Promise<Paziente | null> {
     try {
-      return await this.collection.findOne({ id });
+      const pazienti = this.getAllFromStorage();
+      return pazienti.find(p => p.id === id) || null;
     } catch (error) {
       console.error(`Errore durante il recupero del paziente con ID ${id}:`, error);
       return null;
@@ -57,7 +65,10 @@ class PazientiService {
       paziente.createdAt = new Date();
       paziente.updatedAt = new Date();
       
-      await this.collection.insert(paziente);
+      const pazienti = this.getAllFromStorage();
+      pazienti.push(paziente);
+      this.saveToStorage(pazienti);
+      
       return paziente;
     } catch (error) {
       console.error('Errore durante la creazione del paziente:', error);
@@ -67,17 +78,19 @@ class PazientiService {
 
   async update(id: string, paziente: Partial<Paziente>): Promise<Paziente | null> {
     try {
-      const existingPaziente = await this.getById(id);
+      const pazienti = this.getAllFromStorage();
+      const index = pazienti.findIndex(p => p.id === id);
       
-      if (!existingPaziente) {
+      if (index === -1) {
         return null;
       }
       
       // Aggiorna il timestamp
       paziente.updatedAt = new Date();
       
-      const updatedPaziente = { ...existingPaziente, ...paziente };
-      await this.collection.update({ id }, updatedPaziente);
+      const updatedPaziente = { ...pazienti[index], ...paziente };
+      pazienti[index] = updatedPaziente;
+      this.saveToStorage(pazienti);
       
       return updatedPaziente;
     } catch (error) {
@@ -88,8 +101,16 @@ class PazientiService {
 
   async delete(id: string): Promise<boolean> {
     try {
-      const result = await this.collection.remove({ id });
-      return result;
+      const pazienti = this.getAllFromStorage();
+      const filteredPazienti = pazienti.filter(p => p.id !== id);
+      
+      if (filteredPazienti.length === pazienti.length) {
+        // No patient was removed
+        return false;
+      }
+      
+      this.saveToStorage(filteredPazienti);
+      return true;
     } catch (error) {
       console.error(`Errore durante l'eliminazione del paziente con ID ${id}:`, error);
       return false;
@@ -103,12 +124,9 @@ class PazientiService {
       }
       
       const lowercaseQuery = query.toLowerCase();
+      const pazienti = this.getAllFromStorage();
       
-      // Recupera tutti i pazienti e filtra lato client
-      // In una soluzione più scalabile, questa logica sarebbe sul server
-      const allPazienti = await this.getAll();
-      
-      return allPazienti.filter(paziente => 
+      return pazienti.filter(paziente => 
         paziente.nome.toLowerCase().includes(lowercaseQuery) ||
         paziente.cognome.toLowerCase().includes(lowercaseQuery) ||
         paziente.codiceFiscale.toLowerCase().includes(lowercaseQuery)
